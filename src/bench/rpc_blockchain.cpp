@@ -37,7 +37,7 @@ struct TestBlockAndIndex {
 
         blockHash = block.GetHash();
         blockindex.phashBlock = &blockHash;
-        blockindex.nBits = 403014710;
+        blockindex.SetHeaderFields(HeaderFields{.nBits = 403014710});
     }
 };
 

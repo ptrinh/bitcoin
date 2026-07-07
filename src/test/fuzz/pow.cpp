@@ -49,11 +49,15 @@ FUZZ_TARGET(pow, .init = initialize_pow)
             if (fuzzed_data_provider.ConsumeBool()) {
                 const uint32_t seconds = current_height * consensus_params.nPowTargetSpacing;
                 if (!AdditionOverflow(fixed_time, seconds)) {
-                    current_block.nTime = fixed_time + seconds;
+                    HeaderFields fields{current_block.GetHeaderFields()};
+                    fields.nTime = fixed_time + seconds;
+                    current_block.SetHeaderFields(fields);
                 }
             }
             if (fuzzed_data_provider.ConsumeBool()) {
-                current_block.nBits = fixed_bits;
+                HeaderFields fields{current_block.GetHeaderFields()};
+                fields.nBits = fixed_bits;
+                current_block.SetHeaderFields(fields);
             }
             if (fuzzed_data_provider.ConsumeBool()) {
                 current_block.nChainWork = previous_block != nullptr ? previous_block->nChainWork + GetBlockProof(*previous_block) : arith_uint256{0};

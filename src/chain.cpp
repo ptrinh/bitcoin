@@ -5,11 +5,9 @@
 
 #include <blockheadercache.h>
 #include <chain.h>
+#include <logging.h>
 #include <tinyformat.h>
 #include <util/check.h>
-
-#include <cstdio>
-#include <cstdlib>
 
 BlockHeaderCache g_block_header_cache;
 
@@ -63,8 +61,8 @@ std::optional<HeaderFields> BlockHeaderCache::TryGet(const CBlockIndex* index)
     } catch (const std::exception& e) {
         // e.g. dbwrapper_error on a corrupt block tree DB: point reads verify
         // checksums (unlike the iterator-based initial load).
-        std::fprintf(stderr, "BlockHeaderCache: backend read failed for block %s: %s\n",
-                     index->phashBlock->ToString().c_str(), e.what());
+        LogError("BlockHeaderCache: backend read failed for block %s: %s\n",
+                 index->phashBlock->ToString(), e.what());
         return std::nullopt;
     }
     InsertLru(index, fields);

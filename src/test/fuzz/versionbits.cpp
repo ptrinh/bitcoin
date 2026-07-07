@@ -219,7 +219,7 @@ FUZZ_TARGET(versionbits, .init = initialize)
         CBlockIndex* current_block = blocks.mine_block(signal);
 
         // verify that signalling attempt was interpreted correctly
-        assert(checker.Condition(current_block->nVersion) == signal);
+        assert(checker.Condition(current_block->GetBlockVersion()) == signal);
 
         // state and since don't change within the period
         const ThresholdState state = checker.GetStateFor(current_block);
@@ -257,7 +257,7 @@ FUZZ_TARGET(versionbits, .init = initialize)
     bool signal = (signalling_mask >> (period % 32)) & 1;
     if (signal) ++blocks_sig;
     CBlockIndex* current_block = blocks.mine_block(signal);
-    assert(checker.Condition(current_block->nVersion) == signal);
+    assert(checker.Condition(current_block->GetBlockVersion()) == signal);
 
     const BIP9Stats stats = checker.GetStateStatisticsFor(current_block);
     assert(stats.period == period);
