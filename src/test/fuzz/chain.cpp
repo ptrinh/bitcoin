@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <blockheadercache.h>
 #include <chain.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
@@ -21,6 +22,10 @@ FUZZ_TARGET(chain)
 
     const uint256 zero{};
     disk_block_index->phashBlock = &zero;
+    // Pin the deserialized header fields so the CBlockIndex accessors
+    // (GetBlockTime() etc.) can resolve them without a block tree DB.
+    disk_block_index->SetHeaderFields(HeaderFields{disk_block_index->nVersion, disk_block_index->hashMerkleRoot,
+                                                   disk_block_index->nTime, disk_block_index->nBits, disk_block_index->nNonce});
     {
         LOCK(::cs_main);
         (void)disk_block_index->ConstructBlockHash();

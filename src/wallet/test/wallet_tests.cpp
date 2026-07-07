@@ -289,7 +289,7 @@ static int64_t AddTx(ChainstateManager& chainman, CWallet& wallet, uint32_t lock
         assert(inserted.second);
         const uint256& hash = inserted.first->first;
         block = &inserted.first->second;
-        block->nTime = blockTime;
+        block->SetHeaderFields(HeaderFields{.nTime = static_cast<uint32_t>(blockTime)});
         block->phashBlock = &hash;
         state = TxStateConfirmed{hash, block->nHeight, /*index=*/0};
     }

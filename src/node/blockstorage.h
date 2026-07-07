@@ -48,6 +48,7 @@ class BlockValidationState;
 class CBlockUndo;
 class Chainstate;
 class ChainstateManager;
+struct HeaderFields;
 namespace Consensus {
 struct Params;
 }

@@ -4,6 +4,7 @@
 
 #include <bench/bench.h>
 #include <bench/data/block413567.raw.h>
+#include <blockheadercache.h>
 #include <chain.h>
 #include <consensus/params.h>
 #include <core_io.h>

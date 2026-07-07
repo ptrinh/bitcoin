@@ -5,6 +5,7 @@
 #include <node/blockstorage.h>
 
 #include <arith_uint256.h>
+#include <blockheadercache.h>
 #include <chain.h>
 #include <consensus/params.h>
 #include <crypto/hex_base.h>
