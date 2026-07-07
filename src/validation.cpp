@@ -2884,7 +2884,7 @@ static void UpdateTipLog(
     // Disable rate limiting as this may log frequently during IBD.
     LogInfo(util::log::NO_RATE_LIMIT, "%s%s: new best=%s height=%d version=0x%08x log2_work=%f tx=%lu date='%s' progress=%f cache=%.1fMiB(%utxo)%s\n",
                    prefix, func_name,
-                   tip->GetBlockHash().ToString(), tip->nHeight, tip->nVersion,
+                   tip->GetBlockHash().ToString(), tip->nHeight, tip->GetBlockVersion(),
                    log(tip->nChainWork.getdouble()) / log(2.0), tip->m_chain_tx_count,
                    FormatISO8601DateTime(tip->GetBlockTime()),
                    background_validation ? chainman.GetBackgroundVerificationProgress(*tip) : chainman.GuessVerificationProgress(tip),
@@ -3317,7 +3317,7 @@ bool ChainstateManager::NotifyHeaderTip()
     }
     // Send block tip changed notifications without the lock held
     if (fNotify) {
-        GetNotifications().headerTip(GetSynchronizationState(fInitialBlockDownload, m_blockman.m_blockfiles_indexed), pindexHeader->nHeight, pindexHeader->nTime, false);
+        GetNotifications().headerTip(GetSynchronizationState(fInitialBlockDownload, m_blockman.m_blockfiles_indexed), pindexHeader->nHeight, pindexHeader->GetHeaderFields().nTime, false);
     }
     return fNotify;
 }

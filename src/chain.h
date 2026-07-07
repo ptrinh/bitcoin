@@ -7,6 +7,7 @@
 #define BITCOIN_CHAIN_H
 
 #include <arith_uint256.h>
+#include <blockheadercache.h>
 #include <consensus/params.h>
 #include <flatfile.h>
 #include <kernel/cs_main.h>
@@ -122,26 +123,26 @@ public:
     //! Note: in a potential headers-first mode, this number cannot be relied upon
     unsigned int nTx{0};
 
-    //! (memory only) Number of transactions in the chain up to and including this block.
-    //! This value will be non-zero if this block and all previous blocks back
-    //! to the genesis block or an assumeutxo snapshot block have reached the
-    //! VALID_TRANSACTIONS level.
-    uint64_t m_chain_tx_count{0};
-
     //! Verification status of this block. See enum BlockStatus
     //!
     //! Note: this value is modified to show BLOCK_OPT_WITNESS during UTXO snapshot
     //! load to avoid a spurious startup failure requiring -reindex.
     //! @sa NeedsRedownload
     //! @sa ActivateSnapshot
+    //!
+    //! Note: declared before m_chain_tx_count to avoid alignment padding.
     uint32_t nStatus GUARDED_BY(::cs_main){0};
 
-    //! block header
-    int32_t nVersion{0};
-    uint256 hashMerkleRoot{};
-    uint32_t nTime{0};
-    uint32_t nBits{0};
-    uint32_t nNonce{0};
+    //! (memory only) Number of transactions in the chain up to and including this block.
+    //! This value will be non-zero if this block and all previous blocks back
+    //! to the genesis block or an assumeutxo snapshot block have reached the
+    //! VALID_TRANSACTIONS level.
+    uint64_t m_chain_tx_count{0};
+
+    // NOTE: the block-header fields (nVersion, hashMerkleRoot, nTime, nBits,
+    // nNonce) are no longer stored here. They live in g_block_header_cache
+    // (pinned until persisted to the block tree DB, then lazily re-read from
+    // it). Use the GetBlock*() accessors / SetHeaderFields() below.
 
     //! (memory only) Sequential id assigned to distinguish order in which blocks are received.
     //! Initialized to SEQ_ID_INIT_FROM_DISK{1} when loading blocks from disk, except for blocks
@@ -151,14 +152,9 @@ public:
     //! (memory only) Maximum nTime in the chain up to and including this block.
     unsigned int nTimeMax{0};
 
-    explicit CBlockIndex(const CBlockHeader& block)
-        : nVersion{block.nVersion},
-          hashMerkleRoot{block.hashMerkleRoot},
-          nTime{block.nTime},
-          nBits{block.nBits},
-          nNonce{block.nNonce}
-    {
-    }
+    //! Pins the header fields of `block` in g_block_header_cache, keyed by
+    //! this object.
+    explicit CBlockIndex(const CBlockHeader& block);
 
     FlatFilePos GetBlockPos() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
     {
@@ -182,18 +178,23 @@ public:
         return ret;
     }
 
-    CBlockHeader GetBlockHeader() const
-    {
-        CBlockHeader block;
-        block.nVersion = nVersion;
-        if (pprev)
-            block.hashPrevBlock = pprev->GetBlockHash();
-        block.hashMerkleRoot = hashMerkleRoot;
-        block.nTime = nTime;
-        block.nBits = nBits;
-        block.nNonce = nNonce;
-        return block;
-    }
+    //! Assemble the full block header from cached fields + pprev's hash.
+    CBlockHeader GetBlockHeader() const;
+
+    //! Fetch all five cached header fields with a single cache lookup.
+    //! Prefer this over multiple GetBlock*() calls when several fields are
+    //! needed at once.
+    HeaderFields GetHeaderFields() const;
+
+    //! Set (pin) the header fields for this entry. For the rare legitimate
+    //! write sites (genesis/snapshot setup) and tests.
+    void SetHeaderFields(int32_t version, const uint256& merkle_root, uint32_t time, uint32_t bits, uint32_t nonce);
+    void SetHeaderFields(const HeaderFields& fields);
+
+    int32_t GetBlockVersion() const { return GetHeaderFields().nVersion; }
+    uint256 GetBlockMerkleRoot() const { return GetHeaderFields().hashMerkleRoot; }
+    uint32_t GetBlockBits() const { return GetHeaderFields().nBits; }
+    uint32_t GetBlockNonce() const { return GetHeaderFields().nNonce; }
 
     uint256 GetBlockHash() const
     {
@@ -215,12 +216,12 @@ public:
 
     NodeSeconds Time() const
     {
-        return NodeSeconds{std::chrono::seconds{nTime}};
+        return NodeSeconds{std::chrono::seconds{GetBlockTime()}};
     }
 
     int64_t GetBlockTime() const
     {
-        return (int64_t)nTime;
+        return (int64_t)GetHeaderFields().nTime;
     }
 
     int64_t GetBlockTimeMax() const
@@ -280,7 +281,9 @@ public:
     const CBlockIndex* GetAncestor(int height) const;
 
     CBlockIndex() = default;
-    ~CBlockIndex() = default;
+    //! Erases this key from g_block_header_cache (pinned and LRU) to avoid
+    //! dangling entries.
+    ~CBlockIndex();
 
 protected:
     //! CBlockIndex should not allow public copy construction because equality
@@ -302,7 +305,7 @@ protected:
 arith_uint256 GetBitsProof(uint32_t bits);
 
 /** Compute how much work a block index entry corresponds to. */
-inline arith_uint256 GetBlockProof(const CBlockIndex& block) { return GetBitsProof(block.nBits); }
+inline arith_uint256 GetBlockProof(const CBlockIndex& block) { return GetBitsProof(block.GetBlockBits()); }
 
 /** Compute how much work a block header corresponds to. */
 inline arith_uint256 GetBlockProof(const CBlockHeader& header) { return GetBitsProof(header.nBits); }
@@ -327,6 +330,14 @@ class CDiskBlockIndex : public CBlockIndex
 public:
     uint256 hashPrev;
 
+    //! Local copies of the block-header fields (no longer inherited from
+    //! CBlockIndex). The on-disk serialization format is unchanged.
+    int32_t nVersion{0};
+    uint256 hashMerkleRoot{};
+    uint32_t nTime{0};
+    uint32_t nBits{0};
+    uint32_t nNonce{0};
+
     CDiskBlockIndex()
     {
         hashPrev = uint256();
@@ -335,6 +346,12 @@ public:
     explicit CDiskBlockIndex(const CBlockIndex* pindex) : CBlockIndex(*pindex)
     {
         hashPrev = (pprev ? pprev->GetBlockHash() : uint256());
+        const HeaderFields fields{pindex->GetHeaderFields()};
+        nVersion = fields.nVersion;
+        hashMerkleRoot = fields.hashMerkleRoot;
+        nTime = fields.nTime;
+        nBits = fields.nBits;
+        nNonce = fields.nNonce;
     }
 
     SERIALIZE_METHODS(CDiskBlockIndex, obj)

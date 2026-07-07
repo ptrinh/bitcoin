@@ -112,20 +112,25 @@ BOOST_AUTO_TEST_CASE(findearliestatleast_test)
         vBlocksMain[i].phashBlock = &vHashMain[i];
         vBlocksMain[i].BuildSkip();
         if (i < 10) {
-            vBlocksMain[i].nTime = i;
+            vBlocksMain[i].SetHeaderFields(0, uint256{}, /*time=*/i, 0, 0);
             vBlocksMain[i].nTimeMax = i;
         } else {
+            // Pin all-zero header fields first: GetMedianTimePast() below
+            // reads this block's own (not yet assigned) time, which was a
+            // default-initialized nTime=0 before the lazy-header change.
+            vBlocksMain[i].SetHeaderFields(0, uint256{}, 0, 0, 0);
             // randomly choose something in the range [MTP, MTP*2]
             int64_t medianTimePast = vBlocksMain[i].GetMedianTimePast();
             int r{int(m_rng.randrange(medianTimePast))};
-            vBlocksMain[i].nTime = uint32_t(r + medianTimePast);
-            vBlocksMain[i].nTimeMax = std::max(vBlocksMain[i].nTime, vBlocksMain[i-1].nTimeMax);
+            const uint32_t time{uint32_t(r + medianTimePast)};
+            vBlocksMain[i].SetHeaderFields(0, uint256{}, time, 0, 0);
+            vBlocksMain[i].nTimeMax = std::max(time, vBlocksMain[i-1].nTimeMax);
         }
     }
     // Check that we set nTimeMax up correctly.
     unsigned int curTimeMax = 0;
     for (unsigned int i=0; i<vBlocksMain.size(); ++i) {
-        curTimeMax = std::max(curTimeMax, vBlocksMain[i].nTime);
+        curTimeMax = std::max<unsigned int>(curTimeMax, vBlocksMain[i].GetHeaderFields().nTime);
         BOOST_CHECK(curTimeMax == vBlocksMain[i].nTimeMax);
     }
 
@@ -137,7 +142,7 @@ BOOST_AUTO_TEST_CASE(findearliestatleast_test)
     for (unsigned int i=0; i<10000; ++i) {
         // Pick a random element in vBlocksMain.
         int r = m_rng.randrange(vBlocksMain.size());
-        int64_t test_time = vBlocksMain[r].nTime;
+        int64_t test_time = vBlocksMain[r].GetBlockTime();
         CBlockIndex* ret = chain.FindEarliestAtLeast(test_time, 0);
         BOOST_CHECK(ret->nTimeMax >= test_time);
         BOOST_CHECK((ret->pprev==nullptr) || ret->pprev->nTimeMax < test_time);

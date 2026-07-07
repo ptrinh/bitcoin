@@ -96,7 +96,7 @@ CBlock BuildChainTestingSetup::CreateBlock(const CBlockIndex* prev,
     BOOST_REQUIRE(block_template);
     CBlock block{block_template->getBlock()};
     block.hashPrevBlock = prev->GetBlockHash();
-    block.nTime = prev->nTime + 1;
+    block.nTime = prev->GetHeaderFields().nTime + 1;
 
     // Replace mempool-selected txns with just coinbase plus passed-in txns:
     block.vtx.resize(1);

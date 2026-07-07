@@ -497,7 +497,7 @@ static RPCMethod getmininginfo()
     obj.pushKV("blocks", active_chain.Height());
     if (BlockAssembler::m_last_block_weight) obj.pushKV("currentblockweight", *BlockAssembler::m_last_block_weight);
     if (BlockAssembler::m_last_block_num_txs) obj.pushKV("currentblocktx", *BlockAssembler::m_last_block_num_txs);
-    obj.pushKV("bits", strprintf("%08x", tip.nBits));
+    obj.pushKV("bits", strprintf("%08x", tip.GetBlockBits()));
     obj.pushKV("difficulty", GetDifficulty(tip));
     obj.pushKV("target", GetTarget(tip, chainman.GetConsensus().powLimit).GetHex());
     obj.pushKV("networkhashps",    getnetworkhashps().HandleRequest(request));
@@ -511,7 +511,7 @@ static RPCMethod getmininginfo()
     NextEmptyBlockIndex(tip, chainman.GetConsensus(), next_index);
 
     next.pushKV("height", next_index.nHeight);
-    next.pushKV("bits", strprintf("%08x", next_index.nBits));
+    next.pushKV("bits", strprintf("%08x", next_index.GetBlockBits()));
     next.pushKV("difficulty", GetDifficulty(next_index));
     next.pushKV("target", GetTarget(next_index, chainman.GetConsensus().powLimit).GetHex());
     obj.pushKV("next", next);

@@ -109,8 +109,18 @@ public:
     void ReadReindexing(bool& fReindexing);
     void WriteFlag(const std::string& name, bool fValue);
     bool ReadFlag(const std::string& name, bool& fValue);
-    bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt)
+    //! Load the block index from disk. Header fields are NOT pinned in
+    //! g_block_header_cache (they can be lazily re-read from this DB); the
+    //! nBits value of each loaded entry is reported through `bits_out` (if
+    //! non-null) so the caller can compute nChainWork without DB re-reads.
+    bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt,
+                            std::vector<std::pair<const CBlockIndex*, uint32_t>>* bits_out = nullptr)
         EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    //! Point read of the five block-header fields for `hash` from the
+    //! ('b', hash) record. Used as the lazy-read backend of
+    //! g_block_header_cache. Does not take cs_main.
+    bool ReadBlockHeaderFields(const uint256& hash, HeaderFields& out);
 };
 } // namespace kernel
 
@@ -320,6 +330,10 @@ public:
     using ReadRawBlockResult = util::Expected<std::vector<std::byte>, ReadRawError>;
 
     explicit BlockManager(const util::SignalInterrupt& interrupt, Options opts);
+
+    //! Unregisters the g_block_header_cache lazy-read backend (which holds a
+    //! raw pointer to m_block_tree_db).
+    ~BlockManager();
 
     const util::SignalInterrupt& m_interrupt;
     std::atomic<bool> m_importing{false};

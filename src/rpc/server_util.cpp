@@ -143,8 +143,6 @@ void NextEmptyBlockIndex(CBlockIndex& tip, const Consensus::Params& consensusPar
     next_header.nNonce = 0;
 
     next_index.pprev = &tip;
-    next_index.nTime = next_header.nTime;
-    next_index.nBits = next_header.nBits;
-    next_index.nNonce = next_header.nNonce;
+    next_index.SetHeaderFields(next_header.nVersion, next_header.hashMerkleRoot, next_header.nTime, next_header.nBits, next_header.nNonce);
     next_index.nHeight = tip.nHeight + 1;
 }

@@ -133,7 +133,7 @@ void MockTime(FuzzedDataProvider& fuzzed_data_provider, const Chainstate& chains
 {
     const auto time = ConsumeTime(fuzzed_data_provider,
                                   chainstate.m_chain.Tip()->GetMedianTimePast() + 1,
-                                  std::numeric_limits<decltype(chainstate.m_chain.Tip()->nTime)>::max());
+                                  std::numeric_limits<uint32_t>::max());
     SetMockTime(time);
 }
 

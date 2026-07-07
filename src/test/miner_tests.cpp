@@ -517,6 +517,7 @@ void MinerTestingSetup::TestBasicMining(const CScript& scriptPubKey, const std::
         while (m_node.chainman->ActiveChain().Tip()->nHeight < 209999) {
             CBlockIndex* prev = m_node.chainman->ActiveChain().Tip();
             CBlockIndex* next = new CBlockIndex();
+            next->SetHeaderFields(0, uint256{}, 0, 0, 0); // all-zero header fields, like a default-constructed pre-lazy-header CBlockIndex
             next->phashBlock = new uint256(m_rng.rand256());
             m_node.chainman->ActiveChainstate().CoinsTip().SetBestBlock(next->GetBlockHash());
             next->pprev = prev;
@@ -529,6 +530,7 @@ void MinerTestingSetup::TestBasicMining(const CScript& scriptPubKey, const std::
         while (m_node.chainman->ActiveChain().Tip()->nHeight < 210000) {
             CBlockIndex* prev = m_node.chainman->ActiveChain().Tip();
             CBlockIndex* next = new CBlockIndex();
+            next->SetHeaderFields(0, uint256{}, 0, 0, 0); // all-zero header fields, like a default-constructed pre-lazy-header CBlockIndex
             next->phashBlock = new uint256(m_rng.rand256());
             m_node.chainman->ActiveChainstate().CoinsTip().SetBestBlock(next->GetBlockHash());
             next->pprev = prev;
@@ -606,8 +608,12 @@ void MinerTestingSetup::TestBasicMining(const CScript& scriptPubKey, const std::
     BOOST_CHECK(!TestSequenceLocks(CTransaction{tx}, tx_mempool)); // Sequence locks fail
 
     const int SEQUENCE_LOCK_TIME = 512; // Sequence locks pass 512 seconds later
-    for (int i = 0; i < CBlockIndex::nMedianTimeSpan; ++i)
-        m_node.chainman->ActiveChain().Tip()->GetAncestor(m_node.chainman->ActiveChain().Tip()->nHeight - i)->nTime += SEQUENCE_LOCK_TIME; // Trick the MedianTimePast
+    for (int i = 0; i < CBlockIndex::nMedianTimeSpan; ++i) {
+        CBlockIndex* ancestor{Assert(m_node.chainman->ActiveChain().Tip()->GetAncestor(m_node.chainman->ActiveChain().Tip()->nHeight - i))};
+        HeaderFields fields{ancestor->GetHeaderFields()};
+        fields.nTime += SEQUENCE_LOCK_TIME; // Trick the MedianTimePast
+        ancestor->SetHeaderFields(fields);
+    }
     {
         CBlockIndex* active_chain_tip = m_node.chainman->ActiveChain().Tip();
         BOOST_CHECK(SequenceLocks(CTransaction(tx), flags, prevheights, *CreateBlockIndex(active_chain_tip->nHeight + 1, active_chain_tip)));
@@ -615,7 +621,9 @@ void MinerTestingSetup::TestBasicMining(const CScript& scriptPubKey, const std::
 
     for (int i = 0; i < CBlockIndex::nMedianTimeSpan; ++i) {
         CBlockIndex* ancestor{Assert(m_node.chainman->ActiveChain().Tip()->GetAncestor(m_node.chainman->ActiveChain().Tip()->nHeight - i))};
-        ancestor->nTime -= SEQUENCE_LOCK_TIME; // undo tricked MTP
+        HeaderFields fields{ancestor->GetHeaderFields()};
+        fields.nTime -= SEQUENCE_LOCK_TIME; // undo tricked MTP
+        ancestor->SetHeaderFields(fields);
     }
 
     // absolute height locked
@@ -670,7 +678,9 @@ void MinerTestingSetup::TestBasicMining(const CScript& scriptPubKey, const std::
     // However if we advance height by 1 and time by SEQUENCE_LOCK_TIME, all of them should be mined
     for (int i = 0; i < CBlockIndex::nMedianTimeSpan; ++i) {
         CBlockIndex* ancestor{Assert(m_node.chainman->ActiveChain().Tip()->GetAncestor(m_node.chainman->ActiveChain().Tip()->nHeight - i))};
-        ancestor->nTime += SEQUENCE_LOCK_TIME; // Trick the MedianTimePast
+        HeaderFields fields{ancestor->GetHeaderFields()};
+        fields.nTime += SEQUENCE_LOCK_TIME; // Trick the MedianTimePast
+        ancestor->SetHeaderFields(fields);
     }
     m_node.chainman->ActiveChain().Tip()->nHeight++;
     clock.set(std::chrono::seconds{m_node.chainman->ActiveChain().Tip()->GetMedianTimePast() + 1});

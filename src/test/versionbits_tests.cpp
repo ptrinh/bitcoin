@@ -111,8 +111,7 @@ public:
             CBlockIndex* pindex = new CBlockIndex();
             pindex->nHeight = vpblock.size();
             pindex->pprev = Tip();
-            pindex->nTime = nTime;
-            pindex->nVersion = (nVersionBase | nVersion);
+            pindex->SetHeaderFields(/*version=*/nVersionBase | nVersion, /*merkle_root=*/uint256{}, /*time=*/(uint32_t)nTime, /*bits=*/0, /*nonce=*/0);
             pindex->BuildSkip();
             vpblock.push_back(pindex);
         }

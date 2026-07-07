@@ -67,7 +67,7 @@ protected:
 
     bool Condition(const CBlockIndex* pindex) const override
     {
-        return Condition(pindex->nVersion);
+        return Condition(pindex->GetBlockVersion());
     }
 
 public:

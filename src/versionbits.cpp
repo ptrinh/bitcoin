@@ -322,9 +322,10 @@ public:
 
     bool Condition(const CBlockIndex* pindex) const override
     {
+        const int32_t version{pindex->GetBlockVersion()};
         return pindex->nHeight >= m_params.MinBIP9WarningHeight &&
-               ((pindex->nVersion & VERSIONBITS_TOP_MASK) == VERSIONBITS_TOP_BITS) &&
-               ((pindex->nVersion >> m_bit) & 1) != 0 &&
+               ((version & VERSIONBITS_TOP_MASK) == VERSIONBITS_TOP_BITS) &&
+               ((version >> m_bit) & 1) != 0 &&
                ((::ComputeBlockVersion(pindex->pprev, m_params, m_caches) >> m_bit) & 1) == 0;
     }
 };

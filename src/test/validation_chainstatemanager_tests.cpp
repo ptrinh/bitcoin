@@ -185,7 +185,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_ibd_exit_after_loading_blocks, ChainTe
         chainman.m_blockman.m_importing = loading_blocks;
         if (tip_exists) {
             tip.nChainWork = chainman.MinimumChainWork() - (enough_work ? 0 : 1);
-            tip.nTime = (recent_time - (tip_recent ? 0h : 100h)).time_since_epoch().count();
+            tip.SetHeaderFields(/*version=*/0, /*merkle_root=*/uint256{}, /*time=*/(uint32_t)(recent_time - (tip_recent ? 0h : 100h)).time_since_epoch().count(), /*bits=*/0, /*nonce=*/0);
             chainman.ActiveChain().SetTip(tip);
         } else {
             assert(!chainman.ActiveChain().Tip());

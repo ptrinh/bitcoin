@@ -105,9 +105,10 @@ UniValue CreateRolledBackUTXOSnapshot(
  */
 double GetDifficulty(const CBlockIndex& blockindex)
 {
-    int nShift = (blockindex.nBits >> 24) & 0xff;
+    const uint32_t bits{blockindex.GetBlockBits()};
+    int nShift = (bits >> 24) & 0xff;
     double dDiff =
-        (double)0x0000ffff / (double)(blockindex.nBits & 0x00ffffff);
+        (double)0x0000ffff / (double)(bits & 0x00ffffff);
 
     while (nShift < 29)
     {
@@ -172,13 +173,14 @@ UniValue blockheaderToJSON(const CBlockIndex& tip, const CBlockIndex& blockindex
     int confirmations = ComputeNextBlockAndDepth(tip, blockindex, pnext);
     result.pushKV("confirmations", confirmations);
     result.pushKV("height", blockindex.nHeight);
-    result.pushKV("version", blockindex.nVersion);
-    result.pushKV("versionHex", strprintf("%08x", blockindex.nVersion));
-    result.pushKV("merkleroot", blockindex.hashMerkleRoot.GetHex());
-    result.pushKV("time", blockindex.nTime);
+    const HeaderFields header_fields{blockindex.GetHeaderFields()};
+    result.pushKV("version", header_fields.nVersion);
+    result.pushKV("versionHex", strprintf("%08x", header_fields.nVersion));
+    result.pushKV("merkleroot", header_fields.hashMerkleRoot.GetHex());
+    result.pushKV("time", header_fields.nTime);
     result.pushKV("mediantime", blockindex.GetMedianTimePast());
-    result.pushKV("nonce", blockindex.nNonce);
-    result.pushKV("bits", strprintf("%08x", blockindex.nBits));
+    result.pushKV("nonce", header_fields.nNonce);
+    result.pushKV("bits", strprintf("%08x", header_fields.nBits));
     result.pushKV("target", GetTarget(blockindex, pow_limit).GetHex());
     result.pushKV("difficulty", GetDifficulty(blockindex));
     result.pushKV("chainwork", blockindex.nChainWork.GetHex());
@@ -1432,7 +1434,7 @@ RPCMethod getblockchaininfo()
     obj.pushKV("blocks", height);
     obj.pushKV("headers", chainman.m_best_header ? chainman.m_best_header->nHeight : -1);
     obj.pushKV("bestblockhash", tip.GetBlockHash().GetHex());
-    obj.pushKV("bits", strprintf("%08x", tip.nBits));
+    obj.pushKV("bits", strprintf("%08x", tip.GetBlockBits()));
     obj.pushKV("target", GetTarget(tip, chainman.GetConsensus().powLimit).GetHex());
     obj.pushKV("difficulty", GetDifficulty(tip));
     obj.pushKV("time", tip.GetBlockTime());
@@ -1885,7 +1887,7 @@ static RPCMethod getchaintxstats()
     const int64_t nTimeDiff{pindex->GetMedianTimePast() - past_block.GetMedianTimePast()};
 
     UniValue ret(UniValue::VOBJ);
-    ret.pushKV("time", pindex->nTime);
+    ret.pushKV("time", pindex->GetHeaderFields().nTime);
     if (pindex->m_chain_tx_count) {
         ret.pushKV("txcount", pindex->m_chain_tx_count);
     }
@@ -3611,7 +3613,7 @@ return RPCMethod{
 
         data.pushKV("blocks", chain.Height());
         data.pushKV("bestblockhash",         tip->GetBlockHash().GetHex());
-        data.pushKV("bits", strprintf("%08x", tip->nBits));
+        data.pushKV("bits", strprintf("%08x", tip->GetBlockBits()));
         data.pushKV("target", GetTarget(*tip, chainman.GetConsensus().powLimit).GetHex());
         data.pushKV("difficulty", GetDifficulty(*tip));
         data.pushKV("verificationprogress", chainman.GuessVerificationProgress(tip));

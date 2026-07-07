@@ -3,14 +3,168 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <blockheadercache.h>
 #include <chain.h>
 #include <tinyformat.h>
 #include <util/check.h>
 
+#include <cstdio>
+#include <cstdlib>
+
+BlockHeaderCache g_block_header_cache;
+
+void BlockHeaderCache::Pin(const CBlockIndex* index, const HeaderFields& fields)
+{
+    LOCK(m_mutex);
+    // Drop any stale LRU entry so the pinned one is authoritative.
+    if (auto it{m_lru.find(index)}; it != m_lru.end()) {
+        m_lru_order.erase(it->second.lru_it);
+        m_lru.erase(it);
+    }
+    m_pinned[index] = fields;
+}
+
+void BlockHeaderCache::Unpin(const CBlockIndex* index)
+{
+    LOCK(m_mutex);
+    auto it{m_pinned.find(index)};
+    if (it == m_pinned.end()) return;
+    InsertLru(index, it->second);
+    m_pinned.erase(it);
+}
+
+void BlockHeaderCache::Erase(const CBlockIndex* index)
+{
+    LOCK(m_mutex);
+    m_pinned.erase(index);
+    if (auto it{m_lru.find(index)}; it != m_lru.end()) {
+        m_lru_order.erase(it->second.lru_it);
+        m_lru.erase(it);
+    }
+}
+
+HeaderFields BlockHeaderCache::Get(const CBlockIndex* index)
+{
+    LOCK(m_mutex);
+    if (auto it{m_pinned.find(index)}; it != m_pinned.end()) {
+        return it->second;
+    }
+    if (auto it{m_lru.find(index)}; it != m_lru.end()) {
+        // Move to front (most recently used).
+        m_lru_order.splice(m_lru_order.begin(), m_lru_order, it->second.lru_it);
+        return it->second.fields;
+    }
+    // Miss: read through the backend. This must only happen for entries that
+    // have been persisted to the block tree DB (unpersisted ones are pinned).
+    if (!m_backend) {
+        std::fprintf(stderr, "FATAL: BlockHeaderCache: cache miss for CBlockIndex %p (%s) but no lazy-read backend is registered\n",
+                     (const void*)index, index->phashBlock ? index->phashBlock->ToString().c_str() : "no hash");
+        std::abort();
+    }
+    if (!index->phashBlock) {
+        std::fprintf(stderr, "FATAL: BlockHeaderCache: cache miss for CBlockIndex %p with no block hash set\n", (const void*)index);
+        std::abort();
+    }
+    HeaderFields fields;
+    if (!m_backend(*index->phashBlock, fields)) {
+        std::fprintf(stderr, "FATAL: BlockHeaderCache: header fields for block %s not found in block tree DB\n",
+                     index->phashBlock->ToString().c_str());
+        std::abort();
+    }
+    InsertLru(index, fields);
+    return fields;
+}
+
+void BlockHeaderCache::InsertLru(const CBlockIndex* index, const HeaderFields& fields)
+{
+    AssertLockHeld(m_mutex);
+    if (auto it{m_lru.find(index)}; it != m_lru.end()) {
+        it->second.fields = fields;
+        m_lru_order.splice(m_lru_order.begin(), m_lru_order, it->second.lru_it);
+        return;
+    }
+    m_lru_order.push_front(index);
+    m_lru.emplace(index, LruEntry{fields, m_lru_order.begin()});
+    while (m_lru.size() > m_lru_capacity) {
+        const CBlockIndex* evict{m_lru_order.back()};
+        m_lru_order.pop_back();
+        m_lru.erase(evict);
+    }
+}
+
+void BlockHeaderCache::SetBackend(Backend backend)
+{
+    LOCK(m_mutex);
+    m_backend = std::move(backend);
+}
+
+void BlockHeaderCache::ResetBackend()
+{
+    LOCK(m_mutex);
+    m_backend = nullptr;
+}
+
+size_t BlockHeaderCache::PinnedCount() const
+{
+    LOCK(m_mutex);
+    return m_pinned.size();
+}
+
+size_t BlockHeaderCache::LruCount() const
+{
+    LOCK(m_mutex);
+    return m_lru.size();
+}
+
+#if defined(__LP64__) || defined(_WIN64)
+// Removing the 5 cached header fields (48 bytes) shrinks CBlockIndex from 144
+// to 96 bytes on 64-bit platforms.
+static_assert(sizeof(CBlockIndex) == 96, "unexpected sizeof(CBlockIndex); lazy block header layout regressed");
+#endif
+
+CBlockIndex::CBlockIndex(const CBlockHeader& block)
+{
+    g_block_header_cache.Pin(this, HeaderFields{block.nVersion, block.hashMerkleRoot, block.nTime, block.nBits, block.nNonce});
+}
+
+CBlockIndex::~CBlockIndex()
+{
+    g_block_header_cache.Erase(this);
+}
+
+HeaderFields CBlockIndex::GetHeaderFields() const
+{
+    return g_block_header_cache.Get(this);
+}
+
+void CBlockIndex::SetHeaderFields(int32_t version, const uint256& merkle_root, uint32_t time, uint32_t bits, uint32_t nonce)
+{
+    g_block_header_cache.Pin(this, HeaderFields{version, merkle_root, time, bits, nonce});
+}
+
+void CBlockIndex::SetHeaderFields(const HeaderFields& fields)
+{
+    g_block_header_cache.Pin(this, fields);
+}
+
+CBlockHeader CBlockIndex::GetBlockHeader() const
+{
+    const HeaderFields fields{GetHeaderFields()};
+    CBlockHeader block;
+    block.nVersion = fields.nVersion;
+    if (pprev)
+        block.hashPrevBlock = pprev->GetBlockHash();
+    block.hashMerkleRoot = fields.hashMerkleRoot;
+    block.nTime = fields.nTime;
+    block.nBits = fields.nBits;
+    block.nNonce = fields.nNonce;
+    return block;
+}
+
 std::string CBlockIndex::ToString() const
 {
     return strprintf("CBlockIndex(pprev=%p, nHeight=%d, merkle=%s, hashBlock=%s)",
-                     pprev, nHeight, hashMerkleRoot.ToString(), GetBlockHash().ToString());
+                     pprev, nHeight, GetBlockMerkleRoot().ToString(), GetBlockHash().ToString());
 }
 
 void CChain::SetTip(CBlockIndex& block)

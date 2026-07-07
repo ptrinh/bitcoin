@@ -231,7 +231,7 @@ bool HeadersSyncState::ValidateAndStoreRedownloadedHeader(const CBlockHeader& he
     if (!m_redownloaded_headers.empty()) {
         previous_nBits = m_redownloaded_headers.back().nBits;
     } else {
-        previous_nBits = m_chain_start.nBits;
+        previous_nBits = m_chain_start.GetBlockBits();
     }
 
     if (!PermittedDifficultyTransition(m_consensus_params, next_height,

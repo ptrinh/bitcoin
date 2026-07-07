@@ -117,7 +117,8 @@ bool BlockTreeDB::ReadFlag(const std::string& name, bool& fValue)
     return true;
 }
 
-bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt)
+bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex, const util::SignalInterrupt& interrupt,
+                                     std::vector<std::pair<const CBlockIndex*, uint32_t>>* bits_out)
 {
     AssertLockHeld(::cs_main);
     std::unique_ptr<CDBIterator> pcursor(NewIterator());
@@ -130,23 +131,29 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         if (pcursor->GetKey(key) && key.first == DB_BLOCK_INDEX) {
             CDiskBlockIndex diskindex;
             if (pcursor->GetValue(diskindex)) {
-                // Construct block index object
+                // Construct block index object. The five header fields are
+                // deliberately NOT pinned in g_block_header_cache (pinning
+                // ~1M entries would defeat the memory savings); they remain
+                // available in this DB via the lazy-read backend. The values
+                // in hand are only used for the PoW check below and for
+                // derived values (nTimeMax seed, nBits for the caller's
+                // nChainWork computation).
                 CBlockIndex* pindexNew = insertBlockIndex(diskindex.ConstructBlockHash());
                 pindexNew->pprev          = insertBlockIndex(diskindex.hashPrev);
                 pindexNew->nHeight        = diskindex.nHeight;
                 pindexNew->nFile          = diskindex.nFile;
                 pindexNew->nDataPos       = diskindex.nDataPos;
                 pindexNew->nUndoPos       = diskindex.nUndoPos;
-                pindexNew->nVersion       = diskindex.nVersion;
-                pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
-                pindexNew->nTime          = diskindex.nTime;
-                pindexNew->nBits          = diskindex.nBits;
-                pindexNew->nNonce         = diskindex.nNonce;
                 pindexNew->nStatus        = diskindex.nStatus;
                 pindexNew->nTx            = diskindex.nTx;
+                // Seed nTimeMax with this block's own time; it is maximized
+                // with pprev's nTimeMax by the caller in a second
+                // (height-sorted) pass.
+                pindexNew->nTimeMax       = diskindex.nTime;
+                if (bits_out) bits_out->emplace_back(pindexNew, diskindex.nBits);
 
-                if (!CheckProofOfWork(pindexNew->GetBlockHash(), pindexNew->nBits, consensusParams)) {
-                    LogError("%s: CheckProofOfWork failed: %s\n", __func__, pindexNew->ToString());
+                if (!CheckProofOfWork(pindexNew->GetBlockHash(), diskindex.nBits, consensusParams)) {
+                    LogError("%s: CheckProofOfWork failed: hash=%s, height=%d\n", __func__, pindexNew->GetBlockHash().ToString(), pindexNew->nHeight);
                     return false;
                 }
 
@@ -160,6 +167,52 @@ bool BlockTreeDB::LoadBlockIndexGuts(const Consensus::Params& consensusParams, s
         }
     }
 
+    return true;
+}
+
+namespace {
+//! Deserializer for the ('b', hash) record that extracts only the five block
+//! header fields. Mirrors CDiskBlockIndex's serialization format but, unlike
+//! CDiskBlockIndex, does not take cs_main — it is used from
+//! g_block_header_cache's backend, which may be called from any thread.
+struct DiskBlockHeaderFieldsReader {
+    HeaderFields fields;
+
+    template <typename Stream>
+    void Unserialize(Stream& s)
+    {
+        int dummy_version;
+        int height;
+        uint32_t status;
+        unsigned int tx;
+        int file;
+        unsigned int pos;
+        s >> VARINT_MODE(dummy_version, VarIntMode::NONNEGATIVE_SIGNED);
+        s >> VARINT_MODE(height, VarIntMode::NONNEGATIVE_SIGNED);
+        s >> VARINT(status);
+        s >> VARINT(tx);
+        if (status & (BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO)) s >> VARINT_MODE(file, VarIntMode::NONNEGATIVE_SIGNED);
+        if (status & BLOCK_HAVE_DATA) s >> VARINT(pos);
+        if (status & BLOCK_HAVE_UNDO) s >> VARINT(pos);
+
+        uint256 hash_prev;
+        s >> fields.nVersion;
+        s >> hash_prev;
+        s >> fields.hashMerkleRoot;
+        s >> fields.nTime;
+        s >> fields.nBits;
+        s >> fields.nNonce;
+    }
+};
+} // namespace
+
+bool BlockTreeDB::ReadBlockHeaderFields(const uint256& hash, HeaderFields& out)
+{
+    DiskBlockHeaderFieldsReader reader;
+    if (!Read(std::make_pair(DB_BLOCK_INDEX, hash), reader)) {
+        return false;
+    }
+    out = reader.fields;
     return true;
 }
 
@@ -243,8 +296,8 @@ CBlockIndex* BlockManager::AddToBlockIndex(const CBlockHeader& block, CBlockInde
         pindexNew->nHeight = pindexNew->pprev->nHeight + 1;
         pindexNew->BuildSkip();
     }
-    pindexNew->nTimeMax = (pindexNew->pprev ? std::max(pindexNew->pprev->nTimeMax, pindexNew->nTime) : pindexNew->nTime);
-    pindexNew->nChainWork = (pindexNew->pprev ? pindexNew->pprev->nChainWork : 0) + GetBlockProof(*pindexNew);
+    pindexNew->nTimeMax = (pindexNew->pprev ? std::max(pindexNew->pprev->nTimeMax, block.nTime) : block.nTime);
+    pindexNew->nChainWork = (pindexNew->pprev ? pindexNew->pprev->nChainWork : 0) + GetBlockProof(block);
     pindexNew->RaiseValidity(BLOCK_VALID_TREE);
     if (best_header == nullptr || best_header->nChainWork < pindexNew->nChainWork) {
         best_header = pindexNew;
@@ -439,10 +492,18 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash)
 
 bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash)
 {
+    // Transient (pindex, nBits) pairs for the entries read from the block
+    // tree DB, used only to compute nChainWork below without DB re-reads.
+    // A sorted flat vector keeps the transient allocation contiguous (and
+    // returned to the OS on destruction) instead of ~1M small map nodes
+    // that would inflate peak RSS during load.
+    std::vector<std::pair<const CBlockIndex*, uint32_t>> loaded_bits;
+    loaded_bits.reserve(1 << 20); // one allocation for ~1M mainnet entries, avoids realloc doubling spikes
     if (!m_block_tree_db->LoadBlockIndexGuts(
-            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt)) {
+            GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash); }, m_interrupt, &loaded_bits)) {
         return false;
     }
+    std::sort(loaded_bits.begin(), loaded_bits.end());
 
     if (snapshot_blockhash) {
         const std::optional<AssumeutxoData> maybe_au_data = GetParams().AssumeutxoForBlockhash(*snapshot_blockhash);
@@ -481,8 +542,18 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
             return false;
         }
         previous_index = pindex;
-        pindex->nChainWork = (pindex->pprev ? pindex->pprev->nChainWork : 0) + GetBlockProof(*pindex);
-        pindex->nTimeMax = (pindex->pprev ? std::max(pindex->pprev->nTimeMax, pindex->nTime) : pindex->nTime);
+        {
+            // Use the nBits captured during LoadBlockIndexGuts. Entries that
+            // were not read from the DB (e.g. in-memory blocks not yet
+            // flushed, as exercised by tests that reload the index) fall
+            // back to the header cache, where unpersisted entries are pinned.
+            const auto bits_it{std::lower_bound(loaded_bits.begin(), loaded_bits.end(), pindex,
+                                                [](const auto& entry, const CBlockIndex* key) { return entry.first < key; })};
+            const uint32_t bits{bits_it != loaded_bits.end() && bits_it->first == pindex ? bits_it->second : pindex->GetBlockBits()};
+            pindex->nChainWork = (pindex->pprev ? pindex->pprev->nChainWork : 0) + GetBitsProof(bits);
+        }
+        // nTimeMax was seeded with this block's own nTime during load.
+        if (pindex->pprev) pindex->nTimeMax = std::max(pindex->pprev->nTimeMax, pindex->nTimeMax);
 
         // We can link the chain of blocks for which we've received transactions at some point, or
         // blocks that are assumed-valid on the basis of snapshot load (see
@@ -543,6 +614,12 @@ void BlockManager::WriteBlockIndexDB()
     }
     int max_blockfile{this->MaxBlockfileNum()};
     m_block_tree_db->WriteBatchSync(vFiles, max_blockfile, vBlocks);
+    // The written entries are now persisted in the block tree DB and can be
+    // lazily re-read from it: demote their header fields from the pinned
+    // tier to the LRU.
+    for (const CBlockIndex* pindex : vBlocks) {
+        g_block_header_cache.Unpin(pindex);
+    }
 }
 
 bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash)
@@ -1246,6 +1323,13 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
 {
     m_block_tree_db = std::make_unique<BlockTreeDB>(m_opts.block_tree_db_params);
 
+    // Register the lazy-read backend for block header fields. The raw
+    // pointer stays valid for the lifetime of this BlockManager; the backend
+    // is reset in ~BlockManager.
+    g_block_header_cache.SetBackend([db = m_block_tree_db.get()](const uint256& hash, HeaderFields& out) {
+        return db->ReadBlockHeaderFields(hash, out);
+    });
+
     if (m_opts.block_tree_db_params.wipe_data) {
         m_block_tree_db->WriteReindexing(true);
         m_blockfiles_indexed = false;
@@ -1254,6 +1338,14 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
             CleanupBlockRevFiles();
         }
     }
+}
+
+BlockManager::~BlockManager()
+{
+    // The backend holds a raw pointer to m_block_tree_db; drop it before the
+    // DB is destroyed. The m_block_index entries erase their own cache
+    // entries when destructed (which happens after this body runs).
+    g_block_header_cache.ResetBackend();
 }
 
 class ImportingNow
