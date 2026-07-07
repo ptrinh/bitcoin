@@ -11,9 +11,22 @@
 #include <cstdint>
 #include <functional>
 #include <list>
+#include <optional>
+#include <stdexcept>
 #include <unordered_map>
 
 class CBlockIndex;
+
+//! Thrown by BlockHeaderCache::Get when the header fields for an entry are
+//! unavailable (missing or corrupt block tree DB). During chainstate load
+//! this is caught and turned into the canonical "Error loading block
+//! database" failure; in steady state it should never fire (unpersisted
+//! entries are pinned) and propagates as a fatal error.
+class BlockHeaderCacheError : public std::runtime_error
+{
+public:
+    using std::runtime_error::runtime_error;
+};
 
 //! The five block-header fields that are no longer stored inside CBlockIndex.
 //! They remain persisted in the block tree DB (CDiskBlockIndex) and are
@@ -61,8 +74,15 @@ public:
     void Erase(const CBlockIndex* index) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     //! Fetch the header fields for an index: pinned -> LRU -> DB backend.
-    //! Aborts with a diagnostic if the fields are unavailable (this should
-    //! never happen: unpersisted entries are pinned).
+    //! Returns std::nullopt (instead of throwing/aborting) if the backend is
+    //! unregistered, the entry is missing, or the DB read fails (e.g. a
+    //! corrupt block tree DB). Callers on init paths use this to surface a
+    //! clean load error.
+    std::optional<HeaderFields> TryGet(const CBlockIndex* index) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+    //! Like TryGet, but throws BlockHeaderCacheError if the fields are
+    //! unavailable (steady-state accessors: a miss should never happen since
+    //! unpersisted entries are pinned).
     HeaderFields Get(const CBlockIndex* index) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     void SetBackend(Backend backend) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);

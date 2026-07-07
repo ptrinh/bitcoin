@@ -43,7 +43,7 @@ void BlockHeaderCache::Erase(const CBlockIndex* index)
     }
 }
 
-HeaderFields BlockHeaderCache::Get(const CBlockIndex* index)
+std::optional<HeaderFields> BlockHeaderCache::TryGet(const CBlockIndex* index)
 {
     LOCK(m_mutex);
     if (auto it{m_pinned.find(index)}; it != m_pinned.end()) {
@@ -56,23 +56,26 @@ HeaderFields BlockHeaderCache::Get(const CBlockIndex* index)
     }
     // Miss: read through the backend. This must only happen for entries that
     // have been persisted to the block tree DB (unpersisted ones are pinned).
-    if (!m_backend) {
-        std::fprintf(stderr, "FATAL: BlockHeaderCache: cache miss for CBlockIndex %p (%s) but no lazy-read backend is registered\n",
-                     (const void*)index, index->phashBlock ? index->phashBlock->ToString().c_str() : "no hash");
-        std::abort();
-    }
-    if (!index->phashBlock) {
-        std::fprintf(stderr, "FATAL: BlockHeaderCache: cache miss for CBlockIndex %p with no block hash set\n", (const void*)index);
-        std::abort();
-    }
+    if (!m_backend || !index->phashBlock) return std::nullopt;
     HeaderFields fields;
-    if (!m_backend(*index->phashBlock, fields)) {
-        std::fprintf(stderr, "FATAL: BlockHeaderCache: header fields for block %s not found in block tree DB\n",
-                     index->phashBlock->ToString().c_str());
-        std::abort();
+    try {
+        if (!m_backend(*index->phashBlock, fields)) return std::nullopt;
+    } catch (const std::exception& e) {
+        // e.g. dbwrapper_error on a corrupt block tree DB: point reads verify
+        // checksums (unlike the iterator-based initial load).
+        std::fprintf(stderr, "BlockHeaderCache: backend read failed for block %s: %s\n",
+                     index->phashBlock->ToString().c_str(), e.what());
+        return std::nullopt;
     }
     InsertLru(index, fields);
     return fields;
+}
+
+HeaderFields BlockHeaderCache::Get(const CBlockIndex* index)
+{
+    if (auto fields{TryGet(index)}) return *fields;
+    throw BlockHeaderCacheError(strprintf("BlockHeaderCache: header fields for block %s unavailable",
+                                          index->phashBlock ? index->phashBlock->ToString() : "(no hash)"));
 }
 
 void BlockHeaderCache::InsertLru(const CBlockIndex* index, const HeaderFields& fields)

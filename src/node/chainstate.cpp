@@ -5,6 +5,7 @@
 #include <node/chainstate.h>
 
 #include <arith_uint256.h>
+#include <blockheadercache.h>
 #include <chain.h>
 #include <coins.h>
 #include <consensus/params.h>
@@ -148,8 +149,8 @@ static ChainstateLoadResult CompleteChainstateInitialization(
     return {ChainstateLoadStatus::SUCCESS, {}};
 }
 
-ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSizes& cache_sizes,
-                                    const ChainstateLoadOptions& options)
+static ChainstateLoadResult LoadChainstateImpl(ChainstateManager& chainman, const CacheSizes& cache_sizes,
+                                               const ChainstateLoadOptions& options)
 {
     if (!chainman.AssumedValidBlock().IsNull()) {
         LogInfo("Assuming ancestors of block %s have valid signatures.", chainman.AssumedValidBlock().GetHex());
@@ -237,7 +238,21 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
     return {ChainstateLoadStatus::SUCCESS, {}};
 }
 
-ChainstateLoadResult VerifyLoadedChainstate(ChainstateManager& chainman, const ChainstateLoadOptions& options)
+ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSizes& cache_sizes,
+                                    const ChainstateLoadOptions& options)
+{
+    // Lazy header-fields reads verify LevelDB checksums (unlike the
+    // iterator-based initial load), so a corrupt block tree DB can surface
+    // at any header accessor during load. Turn that into the canonical
+    // load error rather than an unhandled exception.
+    try {
+        return LoadChainstateImpl(chainman, cache_sizes, options);
+    } catch (const BlockHeaderCacheError&) {
+        return {ChainstateLoadStatus::FAILURE, _("Error loading block database")};
+    }
+}
+
+static ChainstateLoadResult VerifyLoadedChainstateImpl(ChainstateManager& chainman, const ChainstateLoadOptions& options)
 {
     auto is_coinsview_empty = [&](Chainstate& chainstate) EXCLUSIVE_LOCKS_REQUIRED(::cs_main) {
         return options.wipe_chainstate_db || chainstate.CoinsTip().GetBestBlock().IsNull();
@@ -276,5 +291,15 @@ ChainstateLoadResult VerifyLoadedChainstate(ChainstateManager& chainman, const C
     }
 
     return {ChainstateLoadStatus::SUCCESS, {}};
+}
+
+ChainstateLoadResult VerifyLoadedChainstate(ChainstateManager& chainman, const ChainstateLoadOptions& options)
+{
+    // See LoadChainstate.
+    try {
+        return VerifyLoadedChainstateImpl(chainman, options);
+    } catch (const BlockHeaderCacheError&) {
+        return {ChainstateLoadStatus::FAILURE, _("Error loading block database")};
+    }
 }
 } // namespace node
